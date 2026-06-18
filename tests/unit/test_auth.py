@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from app.auth import generate_token, verify_token
+from app.auth import generate_token, verify_token, configure_auth
 
 
 @pytest.mark.unit
@@ -24,7 +24,6 @@ class TestGenerateToken:
 
     def test_token_contains_payload(self):
         token = generate_token({"sub": "u42", "role": "admin"}, secret="s")
-        payload = verify_token.__wrapped__(token) if hasattr(verify_token, "__wrapped__") else None
         import json
         from base64 import urlsafe_b64decode
         parts = token.split(".")
@@ -37,36 +36,29 @@ class TestGenerateToken:
 @pytest.mark.unit
 class TestVerifyToken:
     def test_valid_token_returns_payload(self):
+        from app.config import Settings
+        cfg = Settings(jwt_secret="test-key", database_url="sqlite+aiosqlite:///:memory:")
+        configure_auth(cfg)
         token = generate_token({"sub": "u1", "role": "user"}, secret="test-key")
-        payload = verify_token.__func__(token) if hasattr(verify_token, "__func__") else None
-        # Use the module-level function directly
-        from app import auth
-        # Patch settings secret
-        import unittest.mock as mock
-        with mock.patch("app.auth.get_settings") as m:
-            m.return_value.jwt_secret = "test-key"
-            payload = auth.verify_token(token)
+        payload = verify_token(token)
         assert payload is not None
         assert payload["sub"] == "u1"
 
     def test_invalid_signature_returns_none(self):
+        from app.config import Settings
+        cfg = Settings(jwt_secret="wrong-secret", database_url="sqlite+aiosqlite:///:memory:")
+        configure_auth(cfg)
         token = generate_token({"sub": "u1", "role": "user"}, secret="secret-a")
-        import unittest.mock as mock
-        with mock.patch("app.auth.get_settings") as m:
-            m.return_value.jwt_secret = "wrong-secret"
-            result = mock.MagicMock()
-            from app import auth
-            result = auth.verify_token(token)
+        result = verify_token(token)
         assert result is None
 
     def test_malformed_token_returns_none(self):
-        import unittest.mock as mock
-        from app import auth
-        with mock.patch("app.auth.get_settings") as m:
-            m.return_value.jwt_secret = "test"
-            assert auth.verify_token("not.a.token.at.all") is None
-            assert auth.verify_token("") is None
-            assert auth.verify_token("x.y") is None
+        from app.config import Settings
+        cfg = Settings(jwt_secret="test", database_url="sqlite+aiosqlite:///:memory:")
+        configure_auth(cfg)
+        assert verify_token("not.a.token.at.all") is None
+        assert verify_token("") is None
+        assert verify_token("x.y") is None
 
 
 @pytest.mark.unit
@@ -75,20 +67,16 @@ class TestAdminRequirement:
 
     @pytest.mark.asyncio
     async def test_admin_token_passes(self, admin_token, test_settings):
-        import unittest.mock as mock
-        from app import auth
-        with mock.patch("app.auth.get_settings") as m:
-            m.return_value.jwt_secret = test_settings.jwt_secret
-            payload = auth.verify_token(admin_token)
+        configure_auth(test_settings)
+        from app.auth import verify_token
+        payload = verify_token(admin_token)
         assert payload is not None
         assert payload["role"] == "admin"
 
     @pytest.mark.asyncio
     async def test_user_token_has_user_role(self, user_token, test_settings):
-        import unittest.mock as mock
-        from app import auth
-        with mock.patch("app.auth.get_settings") as m:
-            m.return_value.jwt_secret = test_settings.jwt_secret
-            payload = auth.verify_token(user_token)
+        configure_auth(test_settings)
+        from app.auth import verify_token
+        payload = verify_token(user_token)
         assert payload is not None
         assert payload["role"] == "user"
