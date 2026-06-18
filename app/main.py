@@ -30,11 +30,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
-from app.database import create_tables, dispose_engine, get_db
+from app.database import configure_engine, create_tables, dispose_engine, get_db
 from app.models import BookingModel, HealthResponse, InfoResponse
 from app.routers.availability import router as availability_router
 from app.routers.bookings import router as bookings_router
 from app.services.availability import get_availability_index
+from app.auth import configure_auth
+from app.services.email import configure_email
 
 structlog.configure(
     processors=[
@@ -51,6 +53,12 @@ def _make_lifespan(settings: Settings):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         logger.info("Starting nexus-booking", port=settings.port, debug=settings.debug)
+
+        # 0. Wire all services to the injected settings — ensures create_app(settings=...)
+        #    fully controls DB/auth/email without any global get_settings() fallback.
+        configure_engine(settings)
+        configure_auth(settings)
+        configure_email(settings)
 
         # 1. Ensure tables exist (dev/test — production uses Alembic)
         await create_tables()
