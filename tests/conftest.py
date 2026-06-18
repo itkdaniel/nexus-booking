@@ -19,11 +19,12 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.auth import generate_token
+from app.auth import generate_token, configure_auth
 from app.config import Settings
 from app.database import Base, get_db_dep
 from app.main import create_app
 from app.services.availability import AvailabilityIndex, get_availability_index
+from app.services.email import configure_email
 
 # ── Test database ──────────────────────────────────────────────────────────────
 
@@ -43,6 +44,29 @@ async def reset_availability_index(request):
     av_module._index = None
     yield
     av_module._index = None
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def reset_injected_settings(request):
+    """Reset configure_auth/_email module-level overrides between tests.
+
+    Ensures that test_settings injected via configure_auth/configure_email
+    don't leak from one test into the next.
+    """
+    import app.auth as auth_module
+    import app.services.email as email_module
+    import app.database as db_module
+    # Save
+    prev_auth = auth_module._settings
+    prev_email = email_module._settings
+    prev_engine = db_module._engine
+    prev_factory = db_module._session_factory
+    yield
+    # Restore
+    auth_module._settings = prev_auth
+    email_module._settings = prev_email
+    db_module._engine = prev_engine
+    db_module._session_factory = prev_factory
 
 
 @pytest.fixture(scope="function")
@@ -91,7 +115,7 @@ async def client(test_settings, test_engine):
     Overrides the DB dependency to use the test engine.
 
     Note: ASGITransport does NOT trigger ASGI lifespan events, so we
-    manually build the availability index here using test_settings.
+    manually configure auth/email/index here using test_settings.
     """
     import app.services.availability as av_module
 
@@ -111,27 +135,18 @@ async def client(test_settings, test_engine):
     await idx.build({}, window_days=test_settings.availability_window_days)
     av_module._index = idx
 
+    # Wire auth and email to the test settings (factory-pattern injection)
+    configure_auth(test_settings)
+    configure_email(test_settings)
+
     app_instance = create_app(test_settings)
     app_instance.dependency_overrides[get_db_dep] = override_db
 
-    # Patch auth to use test JWT secret (get_settings() is lru_cached globally)
-    import unittest.mock as mock
-    import app.auth as auth_module
-    auth_module._original_get_settings = auth_module.get_settings
-    auth_module.get_settings = mock.MagicMock(return_value=test_settings)
-
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app_instance),
-            base_url="http://test",
-        ) as ac:
-            yield ac
-    finally:
-        # Restore auth get_settings
-        import app.auth as auth_module
-        if hasattr(auth_module, "_original_get_settings"):
-            auth_module.get_settings = auth_module._original_get_settings
-            del auth_module._original_get_settings
+    async with AsyncClient(
+        transport=ASGITransport(app=app_instance),
+        base_url="http://test",
+    ) as ac:
+        yield ac
 
 
 # ── Auth tokens ────────────────────────────────────────────────────────────────
