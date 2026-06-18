@@ -4,6 +4,10 @@ Async email service using aiosmtplib.
 Falls back to structured console logging when SMTP is disabled
 or not configured — so the app never blocks on email in dev/test.
 
+Config injection: call configure_email(settings) at startup (via create_app) so
+send_email() uses the injected settings rather than the global get_settings()
+fallback. This keeps email config fully consistent with the factory pattern.
+
 Parallelism: email is always dispatched as a fire-and-forget
 asyncio task so it never blocks the booking creation response.
 """
@@ -14,9 +18,26 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from app.config import get_settings
+from app.config import get_settings  # exported for mock.patch("app.services.email.get_settings")
 
 logger = logging.getLogger("nexus-booking.email")
+
+# Module-level settings override — set by configure_email(settings) at startup.
+# When not None, takes priority over the global get_settings() singleton.
+_settings = None
+
+
+def configure_email(settings) -> None:
+    """Wire email to the injected Settings object. Called once at startup."""
+    global _settings
+    _settings = settings
+
+
+def _get_settings():
+    """Return injected settings or fall back to the module-level get_settings()."""
+    if _settings is not None:
+        return _settings
+    return get_settings()
 
 
 @dataclass
@@ -40,7 +61,7 @@ async def send_email(payload: EmailPayload) -> SendResult:
     Send an email via aiosmtplib or log to console.
     Never raises — returns SendResult with success=False on error.
     """
-    s = get_settings()
+    s = _get_settings()
 
     if not s.email_enabled or not s.smtp_host:
         logger.info(
@@ -161,7 +182,7 @@ async def dispatch_booking_emails(booking_data: dict) -> None:
     Fire-and-forget: send user confirmation + admin notification in parallel.
     Uses asyncio.gather() for concurrent dispatch — O(1) blocking time.
     """
-    s = get_settings()
+    s = _get_settings()
 
     html_user, text_user = _booking_html(booking_data, is_admin=False)
     html_admin, text_admin = _booking_html(booking_data, is_admin=True)
