@@ -119,7 +119,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             status="ok",
             service=cfg.app_name,
             version=cfg.version,
-            uptime_seconds=round(time.monotonic() - _start_time, 2),
+            uptime=round(time.monotonic() - _start_time, 2),
         )
 
     @app.get("/info", response_model=InfoResponse, tags=["meta"])
