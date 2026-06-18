@@ -63,6 +63,42 @@ class TestFullBookingLifecycle:
         assert r2.status_code == 409
         assert r2.json()["code"] == "SLOT_UNAVAILABLE"
 
+    async def test_cancel_then_rebook_same_slot(self, client, admin_headers):
+        """Cancelling a booking frees the slot so it can be rebooked."""
+        payload = {
+            "name": "Rebook Test",
+            "email": "rebook@example.com",
+            "meetingType": "discovery",
+            "details": "Testing that cancellation frees the slot for rebooking.",
+            "date": "2099-12-15",
+            "time": "11:00",
+        }
+
+        # 1. Book the slot
+        r1 = await client.post("/v1/bookings", json=payload)
+        assert r1.status_code == 201, f"Initial booking failed: {r1.text}"
+        booking_id = r1.json()["id"]
+
+        # 2. Verify slot is taken
+        r2 = await client.post("/v1/bookings", json=payload)
+        assert r2.status_code == 409, "Same slot should be unavailable"
+
+        # 3. Admin cancels the booking
+        r3 = await client.patch(
+            f"/v1/bookings/{booking_id}",
+            json={"cancelled": True, "cancelReason": "Cancel for rebook test"},
+            headers=admin_headers,
+        )
+        assert r3.status_code == 200
+        assert r3.json()["cancelled"] is True
+
+        # 4. Slot is freed — a different user can rebook the same slot
+        payload2 = {**payload, "name": "Second Booker", "email": "second@example.com"}
+        r4 = await client.post("/v1/bookings", json=payload2)
+        assert r4.status_code == 201, (
+            f"Rebook after cancel should succeed, got {r4.status_code}: {r4.text}"
+        )
+
     async def test_concurrent_bookings_different_slots(self, client):
         """Multiple different slots can be booked concurrently."""
         times = ["09:00", "09:15", "09:30"]
