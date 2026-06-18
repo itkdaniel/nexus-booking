@@ -31,9 +31,14 @@ TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def reset_availability_index():
+async def reset_availability_index(request):
     """Reset the global availability index singleton before each test.
-    Prevents state leakage between tests that create different apps."""
+    Prevents state leakage between tests that create different apps.
+    Skipped for BDD tests which manage their own index via bdd_client fixture."""
+    # BDD tests use the bdd_client fixture which manages the index directly
+    if "bdd_client" in request.fixturenames:
+        yield
+        return
     import app.services.availability as av_module
     av_module._index = None
     yield
