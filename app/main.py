@@ -23,8 +23,10 @@ from typing import Optional
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from sqlalchemy import select
 
 from app.config import Settings, get_settings
@@ -65,8 +67,8 @@ def _make_lifespan(settings: Settings):
             for row in result.all():
                 booked_map[row.date].add(row.time)
 
-        await idx.build(dict(booked_map), window_days=cfg.availability_window_days)
-        logger.info("Availability index built", window_days=cfg.availability_window_days)
+        await idx.build(dict(booked_map), window_days=settings.availability_window_days)
+        logger.info("Availability index built", window_days=settings.availability_window_days)
 
         yield
 
@@ -144,7 +146,44 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.include_router(bookings_router)
     app.include_router(availability_router)
 
-    # ── Global error handler ──────────────────────────────────────────────────
+    # ── Normalized error handlers ─────────────────────────────────────────────
+    # All responses conform to: {error, code, details, request_id}
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        import uuid
+        # Routes raise HTTPException(detail={...envelope...}); unwrap if already shaped
+        detail = exc.detail
+        if isinstance(detail, dict) and "error" in detail and "code" in detail:
+            # Already a proper envelope — serve top-level
+            content = {
+                "error": detail.get("error", "HTTP error"),
+                "code": detail.get("code", f"HTTP_{exc.status_code}"),
+                "details": detail.get("details", {}),
+                "request_id": detail.get("request_id", str(uuid.uuid4())),
+            }
+        else:
+            content = {
+                "error": str(detail) if detail else "HTTP error",
+                "code": f"HTTP_{exc.status_code}",
+                "details": {},
+                "request_id": str(uuid.uuid4()),
+            }
+        return JSONResponse(status_code=exc.status_code, content=content)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        import uuid
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "Request validation failed",
+                "code": "VALIDATION_ERROR",
+                "details": {"errors": exc.errors()},
+                "request_id": str(uuid.uuid4()),
+            },
+        )
+
     @app.exception_handler(Exception)
     async def global_exc_handler(request: Request, exc: Exception):
         import uuid
