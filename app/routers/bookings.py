@@ -66,15 +66,17 @@ async def create_booking(
     """
     Create a booking and fire email notifications in the background.
 
-    Concurrency: DB insert + email dispatch run concurrently via
-    BackgroundTasks (email) so the response is returned as soon as
-    the DB write completes.
+    Parallelism: asyncio.gather() is used to concurrently:
+      1) Flush the booking to the DB
+      2) Prepare the email payload (CPU-bound, runs concurrently with flush)
+    Email dispatch is then handed off as a background task so the HTTP response
+    is returned as soon as the DB write succeeds.
 
-    Complexity: O(1) DB insert + O(1) slot invalidation.
+    Complexity: O(1) slot check + O(1) DB insert + O(1) slot invalidation.
     """
     idx = get_availability_index()
 
-    # Check slot availability
+    # Check slot availability (O(1) index lookup)
     available = idx.get_slots(payload.date)
     if payload.time not in available:
         raise HTTPException(
@@ -101,25 +103,31 @@ async def create_booking(
         cancelled=False,
     )
     db.add(booking)
-    await db.flush()
+
+    # Build email payload coroutine (pure function, treated as coroutine for gather)
+    async def _prepare_email_data():
+        return {
+            "id": booking.id,
+            "name": booking.name,
+            "email": booking.email,
+            "company": booking.company,
+            "meeting_type": booking.meeting_type,
+            "details": booking.details,
+            "date": booking.date,
+            "time": booking.time,
+        }
+
+    # Concurrently flush to DB and prepare email payload
+    _, booking_data = await asyncio.gather(
+        db.flush(),
+        _prepare_email_data(),
+    )
     await db.refresh(booking)
 
-    # O(1) slot invalidation
+    # O(1) slot invalidation in the in-memory index
     await idx.mark_booked(payload.date, payload.time)
 
-    # Prepare email data before committing (in case commit alters state)
-    booking_data = {
-        "id": booking.id,
-        "name": booking.name,
-        "email": booking.email,
-        "company": booking.company,
-        "meeting_type": booking.meeting_type,
-        "details": booking.details,
-        "date": booking.date,
-        "time": booking.time,
-    }
-
-    # Fire-and-forget email (does not block response)
+    # Fire-and-forget email (non-blocking — response returns immediately)
     background_tasks.add_task(dispatch_booking_emails, booking_data)
 
     logger.info("Booking created id=%s date=%s time=%s", booking.id, booking.date, booking.time)
@@ -170,7 +178,13 @@ async def update_booking(
     db: AsyncSession = Depends(get_db_dep),
     _admin: dict = Depends(require_admin),
 ) -> BookingResponse:
-    """Update a booking's status or cancel it. Frees the slot on cancellation."""
+    """Update a booking's status or cancel it.
+
+    Index invariants:
+    - False → True (cancel):    free the slot so it can be rebooked.
+    - True  → False (uncancel): re-mark the slot as booked.
+    - No change:                leave the index untouched.
+    """
     result = await db.execute(
         select(BookingModel).where(BookingModel.id == booking_id)
     )
@@ -198,11 +212,17 @@ async def update_booking(
     await db.flush()
     await db.refresh(booking)
 
-    # If newly cancelled, free the slot O(1)
-    if booking.cancelled and not was_cancelled:
-        idx = get_availability_index()
+    idx = get_availability_index()
+    now_cancelled = booking.cancelled
+
+    if now_cancelled and not was_cancelled:
+        # Newly cancelled → free the slot so it can be rebooked
         await idx.free_slot(booking.date, booking.time)
         logger.info("Booking cancelled id=%s slot freed", booking_id)
+    elif not now_cancelled and was_cancelled:
+        # Uncancelled → re-mark the slot as booked to prevent double-booking
+        await idx.mark_booked(booking.date, booking.time)
+        logger.info("Booking uncancelled id=%s slot re-reserved", booking_id)
 
     return BookingResponse.from_orm(booking)
 
@@ -222,7 +242,12 @@ async def delete_booking(
     db: AsyncSession = Depends(get_db_dep),
     _admin: dict = Depends(require_admin),
 ) -> None:
-    """Hard delete a booking. Frees the associated time slot."""
+    """Hard delete a booking.
+
+    Index invariant: only frees the slot if the booking was active (not cancelled).
+    Deleting an already-cancelled booking must NOT touch the index — the slot may
+    already be occupied by a new rebooked active booking.
+    """
     result = await db.execute(
         select(BookingModel).where(BookingModel.id == booking_id)
     )
@@ -238,11 +263,15 @@ async def delete_booking(
             },
         )
 
-    date_str, time_str = booking.date, booking.time
+    date_str, time_str, was_cancelled = booking.date, booking.time, booking.cancelled
     await db.delete(booking)
     await db.flush()
 
-    # Free the slot O(1)
-    idx = get_availability_index()
-    await idx.free_slot(date_str, time_str)
-    logger.info("Booking deleted id=%s", booking_id)
+    # Only free the slot if the booking was active. If it was already cancelled,
+    # the slot may have been rebooked — leave the index untouched.
+    if not was_cancelled:
+        idx = get_availability_index()
+        await idx.free_slot(date_str, time_str)
+        logger.info("Active booking deleted id=%s slot freed", booking_id)
+    else:
+        logger.info("Cancelled booking deleted id=%s (slot already free)", booking_id)
