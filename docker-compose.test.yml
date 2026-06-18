@@ -1,0 +1,21 @@
+version: "3.9"
+
+# docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit
+
+services:
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    command: >
+      sh -c "pip install --prefix=/install -r requirements-dev.txt &&
+             python -m pytest tests/ -v --tb=short -m 'not e2e or e2e' 2>&1"
+    environment:
+      DATABASE_URL: "sqlite+aiosqlite:///:memory:"
+      JWT_SECRET: "test-secret-for-ci"
+      EMAIL_ENABLED: "false"
+      DEBUG: "true"
+    volumes:
+      - .:/app
+    working_dir: /app
