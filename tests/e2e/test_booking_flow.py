@@ -61,7 +61,7 @@ class TestFullBookingLifecycle:
 
         r2 = await client.post("/v1/bookings", json=booking_payload)
         assert r2.status_code == 409
-        assert r2.json()["detail"]["code"] == "SLOT_UNAVAILABLE"
+        assert r2.json()["code"] == "SLOT_UNAVAILABLE"
 
     async def test_concurrent_bookings_different_slots(self, client):
         """Multiple different slots can be booked concurrently."""
