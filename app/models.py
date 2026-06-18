@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import Boolean, DateTime, String, Text, func
+from sqlalchemy import Boolean, DateTime, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -22,6 +22,14 @@ from app.database import Base
 class BookingModel(Base):
     """bookings table — one row per scheduled consultation."""
     __tablename__ = "bookings"
+    __table_args__ = (
+        # Prevent double-booking the same slot at the DB level.
+        # Partial uniqueness: only active (non-cancelled) bookings block a slot.
+        # SQLite doesn't support partial indexes via DDL so we use a plain
+        # unique constraint on (date, time) and rely on cancellation freeing slots
+        # at the application layer (mark_booked / free_slot on the index).
+        UniqueConstraint("date", "time", name="uq_booking_slot"),
+    )
 
     id: Mapped[str] = mapped_column(
         String, primary_key=True, default=lambda: str(uuid.uuid4())
@@ -133,7 +141,7 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     version: str
-    uptime_seconds: float
+    uptime: float
 
 
 class InfoResponse(BaseModel):
