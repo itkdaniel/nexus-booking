@@ -3,23 +3,28 @@ Async database layer using SQLAlchemy 2.x async engine + asyncpg driver.
 
 Connection pool: min_size=2, max_size=10 (tuned for low-concurrency microservice).
 All queries use async sessions — no blocking I/O on the event loop.
+
+Config injection: call configure_engine(settings) once during app startup so that
+all subsequent callers use the injected settings rather than the global cached
+get_settings(). This ensures create_app(settings=...) in tests or alternate
+deployments fully controls the DB connection without env-var side effects.
 """
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
+    AsyncEngine,
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from app.config import get_settings
 
 # Module-level engine — shared across all requests (connection pool)
-_engine = None
+_engine: Optional[AsyncEngine] = None
 _session_factory = None
 
 
@@ -28,17 +33,34 @@ class Base(DeclarativeBase):
     pass
 
 
-def get_engine():
+def configure_engine(settings) -> None:
+    """
+    Initialize (or reinitialize) the shared engine from the given Settings object.
+
+    Called once at app startup by create_app() so config injection is consistent.
+    Subsequent calls to get_engine() return this pre-configured engine.
+    """
+    global _engine, _session_factory
+    _engine = create_async_engine(
+        settings.database_url,
+        pool_size=2,
+        max_overflow=8,
+        pool_pre_ping=True,
+        echo=settings.debug,
+    )
+    _session_factory = async_sessionmaker(
+        _engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+
+def get_engine() -> AsyncEngine:
+    """Return the shared engine, lazily creating it from get_settings() if not configured."""
     global _engine
     if _engine is None:
-        settings = get_settings()
-        _engine = create_async_engine(
-            settings.database_url,
-            pool_size=2,
-            max_overflow=8,
-            pool_pre_ping=True,   # Detect stale connections
-            echo=settings.debug,
-        )
+        from app.config import get_settings
+        configure_engine(get_settings())
     return _engine
 
 
@@ -87,7 +109,8 @@ async def create_tables() -> None:
 
 async def dispose_engine() -> None:
     """Dispose connection pool on shutdown."""
-    global _engine
+    global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
         _engine = None
+        _session_factory = None
