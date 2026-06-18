@@ -110,10 +110,11 @@ class TestErrorEnvelopeContract:
         resp = await client.get("/v1/bookings/non-existent-id")
         assert resp.status_code == 404
         body = resp.json()
-        assert "detail" in body
-        detail = body["detail"]
-        assert "error" in detail
-        assert "code" in detail
+        # All errors use top-level envelope: {error, code, details, request_id}
+        assert "error" in body
+        assert "code" in body
+        assert "details" in body
+        assert "request_id" in body
 
     async def test_401_on_missing_auth(self, client):
         resp = await client.get("/v1/bookings")
