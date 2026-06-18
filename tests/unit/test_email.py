@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.email import (
-    EmailPayload, SendResult, _booking_html, dispatch_booking_emails, send_email
+    EmailPayload, SendResult, _booking_html, dispatch_booking_emails, send_email,
+    configure_email,
 )
+from app.config import Settings
 
 
 SAMPLE_BOOKING = {
@@ -24,6 +26,23 @@ SAMPLE_BOOKING = {
     "date": "2099-06-15",
     "time": "10:00",
 }
+
+_DISABLED_SETTINGS = Settings(
+    database_url="sqlite+aiosqlite:///:memory:",
+    email_enabled=False,
+    smtp_host="",
+)
+
+_ENABLED_SETTINGS = Settings(
+    database_url="sqlite+aiosqlite:///:memory:",
+    email_enabled=True,
+    smtp_host="smtp.example.com",
+    smtp_port=587,
+    smtp_secure=False,
+    smtp_user="u",
+    smtp_password="p",
+    admin_email="admin@nexus.dev",
+)
 
 
 @pytest.mark.unit
@@ -65,38 +84,29 @@ class TestBookingHtml:
 @pytest.mark.asyncio
 class TestSendEmail:
     async def test_disabled_email_logs_only(self):
+        configure_email(_DISABLED_SETTINGS)
         payload = EmailPayload(to="a@b.com", subject="Test", html="<p>Hi</p>")
-        with patch("app.services.email.get_settings") as mock_settings:
-            mock_settings.return_value.email_enabled = False
-            mock_settings.return_value.smtp_host = ""
-            result = await send_email(payload)
+        result = await send_email(payload)
         assert result.mode == "log"
         assert result.success is True
 
     async def test_aiosmtplib_not_installed_falls_back(self):
+        configure_email(_ENABLED_SETTINGS)
         payload = EmailPayload(to="a@b.com", subject="T", html="<p>H</p>")
-        with patch("app.services.email.get_settings") as mock_settings:
-            mock_settings.return_value.email_enabled = True
-            mock_settings.return_value.smtp_host = "smtp.example.com"
-            mock_settings.return_value.smtp_port = 587
-            mock_settings.return_value.smtp_secure = False
-            mock_settings.return_value.smtp_user = "u"
-            mock_settings.return_value.smtp_password = "p"
-            with patch.dict("sys.modules", {"aiosmtplib": None}):
-                result = await send_email(payload)
+        with patch.dict("sys.modules", {"aiosmtplib": None}):
+            result = await send_email(payload)
         assert result.mode == "log"
 
     async def test_dispatch_runs_both_emails(self):
         """dispatch_booking_emails sends user + admin emails concurrently."""
+        configure_email(_ENABLED_SETTINGS)
         sent_to = []
 
         async def mock_send(payload: EmailPayload) -> SendResult:
             sent_to.append(payload.to)
             return SendResult(success=True, mode="log")
 
-        with patch("app.services.email.send_email", side_effect=mock_send), \
-             patch("app.services.email.get_settings") as mock_settings:
-            mock_settings.return_value.admin_email = "admin@nexus.dev"
+        with patch("app.services.email.send_email", side_effect=mock_send):
             await dispatch_booking_emails(SAMPLE_BOOKING)
 
         assert "alice@example.com" in sent_to
