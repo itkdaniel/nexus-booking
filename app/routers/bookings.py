@@ -16,7 +16,6 @@ from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_admin, get_optional_user
@@ -102,20 +101,8 @@ async def create_booking(
         cancelled=False,
     )
     db.add(booking)
-    try:
-        await db.flush()
-        await db.refresh(booking)
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "Time slot not available",
-                "code": "SLOT_UNAVAILABLE",
-                "details": {"date": payload.date, "time": payload.time},
-                "request_id": str(uuid.uuid4()),
-            },
-        )
+    await db.flush()
+    await db.refresh(booking)
 
     # O(1) slot invalidation
     await idx.mark_booked(payload.date, payload.time)
