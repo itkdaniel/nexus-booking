@@ -46,9 +46,18 @@ def upgrade() -> None:
     op.create_index("ix_bookings_date", "bookings", ["date"])
     op.create_index("ix_bookings_email", "bookings", ["email"])
     op.create_index("ix_bookings_status", "bookings", ["status"])
+    # Partial unique index: prevents concurrent double-booking at the DB layer.
+    # Only active (non-cancelled) bookings block a slot, so cancelled bookings
+    # can be rebooked freely. PostgreSQL supports this natively; SQLite tests
+    # rely on the in-memory AvailabilityIndex as the guard instead.
+    op.execute(
+        "CREATE UNIQUE INDEX uq_active_booking_slot ON bookings (date, time) "
+        "WHERE NOT cancelled"
+    )
 
 
 def downgrade() -> None:
+    op.execute("DROP INDEX IF EXISTS uq_active_booking_slot")
     op.drop_index("ix_bookings_status", table_name="bookings")
     op.drop_index("ix_bookings_email", table_name="bookings")
     op.drop_index("ix_bookings_date", table_name="bookings")
