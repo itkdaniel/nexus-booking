@@ -20,7 +20,7 @@ class TestHealthContract:
         assert "status" in body
         assert "service" in body
         assert "version" in body
-        assert "uptime_seconds" in body
+        assert "uptime" in body
 
     async def test_health_status_is_ok(self, client):
         resp = await client.get("/health")
