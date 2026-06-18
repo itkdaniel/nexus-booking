@@ -21,10 +21,10 @@ Feature: Admin views all bookings
     Then the response status is 401
 
   Scenario: Admin can get a single booking by ID
-    Given an existing booking for date "2099-08-01" at "09:30"
+    Given an existing booking for date "2099-08-04" at "09:30"
     When an admin GETs the booking by id
     Then the response status is 200
-    And the booking date is "2099-08-01"
+    And the booking date is "2099-08-04"
     And the booking time is "09:30"
 
   Scenario: Getting a non-existent booking returns 404
